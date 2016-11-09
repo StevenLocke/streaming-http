@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python2.7
 
 import os
 import pickle
@@ -16,13 +16,16 @@ from docopt_wrapper import docopt
 from messages import Call
 from messages import ListContainersRequest
 from messages import ListContainersResponse
-from messages import LaunchNestedContainerSession
+# from messages import LaunchNestedContainerSession
 from messages import AttachContainerMessage
 from messages import ControlMsg
 from messages import InitiateStream
 from messages import WindowSize
 from messages import TtyInfo
 from messages import IOMsg
+
+import agent_pb2 as pba
+import mesos_pb2 as pbm
 
 USAGE = \
 """Streaming HTTP Client
@@ -45,6 +48,8 @@ exit_queue = Queue()
 
 
 def input_thread():
+
+
     for chunk in iter(partial(os.read, sys.stdin.fileno(), 1024), ''):
         io_msg = IOMsg(
             IOMsg.STDIN,
@@ -55,6 +60,9 @@ def input_thread():
             io_msg)
 
         input_queue.put(pickle.dumps(attach_container_msg))
+
+    #debugger
+    import pdb; pdb.set_trace()
 
     # To signal EOF we send an IOMsg with 0 content.
     attach_container_msg.msg.data = ""
@@ -90,38 +98,41 @@ def window_resize_handler(signum, frame):
     input_queue.put(pickle.dumps(attach_container_msg))
 
 
-def list_containers():
-    headers = {'content-type': 'application/x-protobuf'}
+# def list_containers():
+#     headers = {'content-type': 'application/x-protobuf'}
 
-    list_containers_request = ListContainersRequest()
+#     list_containers_request = ListContainersRequest()
 
-    call_msg = Call(
-        Call.LIST_CONTAINERS,
-        list_containers_request)
+#     call_msg = Call(
+#         Call.LIST_CONTAINERS,
+#         list_containers_request)
 
-    pickled_msg = pickle.dumps(call_msg)
+#     pickled_msg = pickle.dumps(call_msg)
 
-    request = requests.Request(
-              'POST',
-              'http://{addr}'.format(addr=addr),
-              headers=headers,
-              data=pickled_msg).prepare()
+#     request = requests.Request(
+#               'POST',
+#               'http://{addr}'.format(addr=addr),
+#               headers=headers,
+#               data=pickled_msg).prepare()
 
-    response = session.send(request)
+#     response = session.send(request)
 
-    list_containers_response = pickle.loads(response.content)
-    return list_containers_response.container_ids
+#     list_containers_response = pickle.loads(response.content)
+#     return list_containers_response.container_ids
 
 
 def launch_nested_container_session(addr, launch_nested_container_msg):
     headers = {'connection': 'keep-alive',
                'content-type': 'application/x-protobuf'}
 
-    call_msg = Call(
-        Call.LAUNCH_NESTED_CONTAINER_SESSION,
-        launch_nested_container_msg)
+    pickled_msg = pickle.dumps(msg)
 
-    pickled_msg = pickle.dumps(call_msg)
+
+
+    #debugger
+    import pdb; pdb.set_trace()
+
+
 
     request = requests.Request(
               'POST',
@@ -226,20 +237,33 @@ if __name__ == "__main__":
     threads = []
 
     if (sys.argv[2] == "exec"):
-        msg = LaunchNestedContainerSession(
-            args["<container-id>"],
-            args["<cmd>"],
-            args["<args>"])
+        msg = pba.Call.LaunchNestedContainerSession()
+        # msg = pba.Call.LaunchNestedContainerSession(
+        #     args["<container-id>"],
+        #     args["<cmd>"],
+        #     args["--tty"],
+        #     args["--interactive"])
+            #args["<args>"])
+
+        #debugger
+        import pdb; pdb.set_trace()
 
         threads.append(Thread(
             target=launch_nested_container_session,
             args=(addr, msg)))
         threads[-1].daemon = True
-        threads[-1].start()        
+        threads[-1].start()
 
-        while args["<container-id>"] not in list_containers():
-            time.sleep(0.1)
+        #debugger
+        # import pdb; pdb.set_trace()
 
+
+        #TODO: Fix this non-existant call.
+        # while args["<container-id>"] not in list_containers():
+        #     time.sleep(0.1)
+
+    #debugger
+    # import pdb; pdb.set_trace()
 
     initiate_stream_msg = InitiateStream(
         args["<container-id>"],

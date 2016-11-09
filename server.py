@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python2.7
 
 import os
 import sys
@@ -12,16 +12,9 @@ import threading
 
 from functools import partial
 
-from messages import Call
-from messages import ListContainersRequest
-from messages import ListContainersResponse
-from messages import LaunchNestedContainerSession
-from messages import AttachContainerMessage
-from messages import ControlMsg
-from messages import InitiateStream
-from messages import WindowSize
-from messages import TtyInfo
-from messages import IOMsg
+import agent_pb2 as pba
+import mesos_pb2 as pbm
+
 
 PORT = 8888
 
@@ -35,42 +28,56 @@ class StreamingTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
 
 class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
     def __init__(self, request, client_address, server):
-        self.timeout = 0.1
+        # self.timeout = 0.1
         super(StreamingRequestHandler, self).__init__(
             request,
             client_address,
             server)
 
     def do_POST(self):
+        #debugger
+        import pdb; pdb.set_trace()
+
         if 'content-length' in self.headers:
             length = int(self.headers['content-length'])
             data = self.rfile.read(length)
             msg = pickle.loads(data)
     
-            if msg.type == Call.LIST_CONTAINERS:
-                return self.list_containers(msg.msg)
+            # if msg.type == pba.Call.LIST_CONTAINERS:
+            #     return self.list_containers(msg.msg)
     
-            if msg.type == Call.LAUNCH_NESTED_CONTAINER_SESSION:
+            if msg.type == pba.Call.LAUNCH_NESTED_CONTAINER_SESSION:
+                #debugger
+                # import pdb; pdb.set_trace()
                 return self.handle_launch_nested_container_session(msg.msg)
     
-            if msg.type == Call.ATTACH_CONTAINER_OUTPUT_STREAM:
+            if msg.type == pba.Call.ATTACH_CONTAINER_OUTPUT:
+                #debugger
+                # import pdb; pdb.set_trace()
                 return self.handle_attach_container_output_stream(msg.msg)
 
-        return self.handle_attach_container_input_stream()
+        if msg.type == pba.Call.ATTACH_CONTAINER_INPUT:
+            return self.handle_attach_container_input_stream()
 
-    def list_containers(self, msg):
-        list_containers_response = ListContainersResponse(containers.keys())
-        pickled_msg = pickle.dumps(list_containers_response)
 
-        self.send_response(200)
-        self.send_header('Content-type', 'application/x-protobuf')
-        self.send_header('Content-length', len(pickled_msg))
-        self.end_headers()
-        self.wfile.write(pickled_msg)
+
+    # def list_containers(self, msg):
+    #     #debugger
+    #     import pdb; pdb.set_trace()
+
+
+    #     list_containers_response = ListContainersResponse(containers.keys())
+    #     pickled_msg = pickle.dumps(list_containers_response)
+
+    #     self.send_response(200)
+    #     self.send_header('Content-type', 'application/x-protobuf')
+    #     self.send_header('Content-length', len(pickled_msg))
+    #     self.end_headers()
+    #     self.wfile.write(pickled_msg)
         
 
     def handle_launch_nested_container_session(self, msg):
-        if msg.container_id in containers.keys():
+        if msg.launch_nested_container_session.container_id in containers.keys():
             self.send_response(409)
             return
 
@@ -84,7 +91,7 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         stderr_pipe = os.pipe()
 
         process = subprocess.Popen(
-            [msg.cmd] + msg.args,
+            [msg.launch_nested_container_session.command] + msg.launch_nested_container_session.args,
             close_fds=True,
             env={},
             stdin=stdin_pipe[0],
@@ -96,8 +103,8 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         os.close(stderr_pipe[1])
 
         containers[msg.container_id] = {
-            "cmd" : msg.cmd,
-            "args" : msg.args,
+            "cmd" : msg.launch_nested_container_session.command,
+            "args" : msg.launch_nested_container_session.args,
             "stdin_pipe" : stdin_pipe,
             "stdout_pipe" : stdout_pipe,
             "stderr_pipe" : stderr_pipe,
@@ -109,10 +116,10 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
 
         process.wait()
 
-        self.incref(msg.container_id)
-        containers[msg.container_id]["exit_event"].clear()
-        containers[msg.container_id]["exit_event"].wait()
-        self.decref(msg.container_id)
+        self.incref(msg.launch_nested_container_session.container_id)
+        containers[msg.launch_nested_container_session.container_id]["exit_event"].clear()
+        containers[msg.launch_nested_container_session.container_id]["exit_event"].wait()
+        self.decref(msg.launch_nested_container_session.container_id)
 
         self.send_chunked_terminator()
 
@@ -122,38 +129,32 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         self.send_header('transfer-encoding', 'chunked')
         self.end_headers()
 
-        control_msg = msg.msg
-        initiate_stream_msg = control_msg.msg
-        container_id = initiate_stream_msg.container_id
+        container_id = msg.attach_container_output.container_id
 
         stdin_write = containers[container_id]["stdin_pipe"][1]
         stdout_read = containers[container_id]["stdout_pipe"][0]
         stderr_read = containers[container_id]["stderr_pipe"][0]
 
-        if not initiate_stream_msg.interactive:
+        if not msg.launch_nested_container_session.interactive:
             os.close(stdin_write)
 
         for chunk in iter(partial(os.read, stdout_read, 1024), ''):
-            io_msg = IOMsg(
-                IOMsg.STDOUT,
-                chunk)
+            #debugger
+            # import pdb; pdb.set_trace()
+            io_msg = pbm.ProcessIO()
+            io_msg.type = pbm.processIO.Type.DATA
+            io_msg.data.type = pbm.processIO.data.Type.STDOUT
+            io_msg.data.data = chunk
 
-            attach_container_msg = AttachContainerMessage(
-                AttachContainerMessage.IO_MSG,
-                io_msg)
-
-            self.send_chunked_msg(attach_container_msg)
+            self.send_chunked_msg(io_msg)
 
         for chunk in iter(partial(os.read, stderr_read, 1024), ''):
-            io_msg = IOMsg(
-                IOMsg.STDERR,
-                chunk)
+            io_msg = pbm.ProcessIO()
+            io_msg.type = pbm.processIO.Type.DATA
+            io_msg.data.type = pbm.processIO.data.Type.STDERR
+            io_msg.data.data = chunk
 
-            attach_container_msg = AttachContainerMessage(
-                AttachContainerMessage.IO_MSG,
-                io_msg)
-
-            self.send_chunked_msg(attach_container_msg)
+            self.send_chunked_msg(io_msg)
 
         os.close(stdout_read)
         os.close(stderr_read)
@@ -171,9 +172,7 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             self.end_headers()
             return
 
-        control_msg = msg.msg
-        initiate_stream_msg = control_msg.msg
-        container_id = initiate_stream_msg.container_id
+        container_id = msg.attach_container_input.container_id
 
         stdin_write = containers[container_id]["stdin_pipe"][1]
 
@@ -183,12 +182,13 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             while True:
                 msg = self.get_chunked_msg()
 
-                if msg.type == AttachContainerMessage.IO_MSG:
-                    io_msg = msg.msg
-                    if len(io_msg.data) == 0:
+                if msg.attach_container_input.type == pbm.ProcessIO.Type.DATA and \
+                msg.attach_container_input.process_io.data.type == pbm.ProcessIO.Data.Type.STDIN:
+                    data = msg.attach_container_input.process_io.data
+                    if len(data.data) == 0:
                         break
 
-                    os.write(stdin_write, io_msg.data)
+                    os.write(stdin_write, data.data)
         except Exception as exception:
             error_code = 400
 

@@ -61,6 +61,7 @@ message Call {
     // NOTE: The following field will be added post-mvp to
     // support mounting a new image in the nested container.
     // optional ContainerInfo container = 5;
+    // optional string args = 6
   }
 
   message AttachContainerOutput {
