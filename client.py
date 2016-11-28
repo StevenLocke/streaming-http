@@ -48,8 +48,6 @@ exit_queue = Queue()
 
 
 def input_thread():
-
-
     for chunk in iter(partial(os.read, sys.stdin.fileno(), 1024), ''):
         io_msg = IOMsg(
             IOMsg.STDIN,
