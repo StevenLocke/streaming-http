@@ -1,11 +1,11 @@
-#! /usr/bin/env python2.7
+#! /usr/bin/env python3
 
 import os
 import sys
 import time
-import BaseHTTPServer
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import socket
-import SocketServer
+import socketserver
 import subprocess
 import threading
 import json
@@ -17,9 +17,7 @@ from functools import partial
 import mesos.v1.agent.agent_pb2 as pba
 import mesos.v1.mesos_pb2 as pbm
 
-# from twitter.common import recordio
-# print(sys.path)
-import recordio
+from dcos import recordio
 
 PORT = 8888
 
@@ -36,7 +34,7 @@ def record_parse(message):
         Parse(message, msg)
     return msg
 
-encoder = recordio.Encoder(MessageToJson)
+encoder = recordio.Encoder(lambda s: bytes(MessageToJson(s), "UTF-8"))
 decoder = recordio.Decoder(record_parse)
 
 
@@ -44,13 +42,13 @@ ROUTES = [
     ('/mesos/master/api/v1')
 ]
 
-class StreamingTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
+class StreamingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     def server_bind(self):
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind(self.server_address)
 
 
-class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
+class StreamingRequestHandler(BaseHTTPRequestHandler, object):
     def __init__(self, request, client_address, server):
         super(StreamingRequestHandler, self).__init__(
             request,
@@ -58,7 +56,6 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             server)
 
     def do_GET(self):
-        # print self.path
         if self.path == "/mesos/master/state.json":
             return self.get_state()
 
@@ -93,7 +90,7 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         self.send_header('Content-type', 'application/json')
         self.send_header('Content-length', len(jsonState))
         self.end_headers()
-        self.wfile.write(jsonState)
+        self.wfile.write(bytes(jsonState, 'utf-8'))
 
     def do_POST(self):
         if self.path == "/slave/1/api/v1":
@@ -106,7 +103,7 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             length = int(self.headers['content-length'])
             content = self.rfile.read(length)
 
-            records = decoder.decode(content.decode('utf-8'))
+            records = decoder.decode(content)
             if records:
                 for record in records:
                     if record.type == pba.Call.LAUNCH_NESTED_CONTAINER_SESSION:
@@ -173,7 +170,7 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         stdout_read = containers[container_id]["stdout_pipe"][0]
         stderr_read = containers[container_id]["stderr_pipe"][0]
 
-        for chunk in iter(partial(os.read, stdout_read, 1024), ''):
+        for chunk in iter(partial(os.read, stdout_read, 1024), b''):
             io_msg = pba.ProcessIO()
             io_msg.type = pba.ProcessIO.Type.Value('DATA')
             io_msg.data.type = pba.ProcessIO.Data.Type.Value('STDOUT')
@@ -181,7 +178,7 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             io_msg = encoder.encode(io_msg)
             self.send_chunked_msg(io_msg)
 
-        for chunk in iter(partial(os.read, stderr_read, 1024), ''):
+        for chunk in iter(partial(os.read, stderr_read, 1024), b''):
             io_msg = pba.ProcessIO()
             io_msg.type = pba.ProcessIO.Type.Value('DATA')
             io_msg.data.type = pba.ProcessIO.Data.Type.Value('STDERR')
@@ -238,11 +235,11 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         self.end_headers()
 
     def send_chunked_msg(self, msg):
-        chunk = '%X\r\n%s\r\n' % (len(msg), msg)
-        self.wfile.write(chunk)
+        chunk = '%X\r\n%s\r\n' % (len(msg), msg.decode('utf-8'))
+        self.wfile.write(bytes(chunk, 'utf-8'))
 
     def send_chunked_terminator(self):
-        self.wfile.write('0\r\n\r\n')
+        self.wfile.write(bytes('0\r\n\r\n', 'utf-8'))
 
     def get_chunked_msg(self):
         chunk_size = os.read(self.rfile.fileno(), 2)
@@ -253,7 +250,7 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         chunk = os.read(self.rfile.fileno(), chunk_size)
         os.read(self.rfile.fileno(), 2)
 
-        records = decoder.decode(chunk.decode('utf-8'))
+        records = decoder.decode(chunk)
 
         if records:
             return records[0]
@@ -273,6 +270,6 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
     
 
 if __name__ == '__main__':
-    print "Serving at port", PORT
+    print("Serving at port", PORT)
     server = StreamingTCPServer(("", PORT), StreamingRequestHandler)
     server.serve_forever()
