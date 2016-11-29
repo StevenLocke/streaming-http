@@ -23,10 +23,21 @@ import recordio
 
 PORT = 8888
 
+
 containers = {}
 tasksToContainer = {"1":"a", "2":"b"}
+
+def record_parse(message):
+    msg = pba.Call()
+    try:
+        Parse(message, msg)
+    except:
+        msg = pba.Call.AttachContainerInput()
+        Parse(message, msg)
+    return msg
+
 encoder = recordio.Encoder(MessageToJson)
-decoder = recordio.Decoder(Parse)
+decoder = recordio.Decoder(record_parse)
 
 
 ROUTES = [
@@ -70,8 +81,9 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
                 'id': taskID,
                 'slave_id': '1',
                 'statuses': [{
-                    'container_id': {
-                        'value': containerID }}]}
+                    'container_status': {
+                        'container_id': {
+                            'value': containerID }}}]}
 
             state['frameworks'][0]['tasks'].append(task)
 
@@ -92,34 +104,17 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
     def post_api_v1(self):
         if 'content-length' in self.headers:
             length = int(self.headers['content-length'])
-            data = self.rfile.read(length)
-            msg = pba.Call()
-            Parse(data, msg)
-    
-            # if msg.type == pba.Call.LIST_CONTAINERS:
-            #     return self.list_containers(msg)
-    
-            if msg.type == pba.Call.LAUNCH_NESTED_CONTAINER_SESSION:
-                return self.handle_launch_nested_container_session(msg)
-    
-            if msg.type == pba.Call.ATTACH_CONTAINER_OUTPUT:
-                return self.handle_attach_container_output_stream(msg)
+            content = self.rfile.read(length)
+
+            records = decoder.decode(content.decode('utf-8'))
+            if records:
+                for record in records:
+                    if record.type == pba.Call.LAUNCH_NESTED_CONTAINER_SESSION:
+                        return self.handle_launch_nested_container_session(record)
+                    if record.type == pba.Call.ATTACH_CONTAINER_OUTPUT:
+                        return self.handle_attach_container_output_stream(record)
 
         return self.handle_attach_container_input_stream()
-
-
-
-    # def list_containers(self, msg):
-
-    #     list_containers_response = ListContainersResponse(containers.keys())
-    #     pickled_msg = pickle.dumps(list_containers_response)
-
-    #     self.send_response(200)
-    #     self.send_header('Content-type', 'application/x-protobuf')
-    #     self.send_header('Content-length', len(pickled_msg))
-    #     self.end_headers()
-    #     self.wfile.write(pickled_msg)
-        
 
     def handle_launch_nested_container_session(self, msg):
         container_id = msg.launch_nested_container_session.container_id.value
@@ -178,11 +173,6 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         stdout_read = containers[container_id]["stdout_pipe"][0]
         stderr_read = containers[container_id]["stderr_pipe"][0]
 
-        # if not msg.launch_nested_container_session.interactive:
-        #     os.close(stdin_write)
-
-        # import pdb; pdb.set_trace()
-
         for chunk in iter(partial(os.read, stdout_read, 1024), ''):
             io_msg = pba.ProcessIO()
             io_msg.type = pba.ProcessIO.Type.Value('DATA')
@@ -191,15 +181,6 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             io_msg = encoder.encode(io_msg)
             self.send_chunked_msg(io_msg)
 
-            # r, w = os.pipe()
-            # w = os.fdopen(w, 'wb')
-            # writer = recordio.StringRecordWriter(w)
-            # writer.write(MessageToJson(io_msg))
-            # w.close()
-            # out = os.read(r, 100000000)
-            # print(out)
-            # self.send_chunked_msg(out)
-
         for chunk in iter(partial(os.read, stderr_read, 1024), ''):
             io_msg = pba.ProcessIO()
             io_msg.type = pba.ProcessIO.Type.Value('DATA')
@@ -207,15 +188,6 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             io_msg.data.data = chunk
             io_msg = encoder.encode(io_msg)
             self.send_chunked_msg(io_msg)
-
-            # r, w = os.pipe()
-            # w = os.fdopen(w, 'wb')
-            # writer = recordio.StringRecordWriter(w)
-            # writer.write(MessageToJson(io_msg))
-            # w.close()
-            # out = os.read(r, 100000000)
-            # print(out.encode('utf-8'))
-            # self.send_chunked_msg(out)
 
         os.close(stdout_read)
         os.close(stderr_read)
@@ -228,19 +200,14 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
     def handle_attach_container_input_stream(self):
         try:
             chunk = self.get_chunked_msg()
-            # print(chunk)
-            msg = pba.Call()
-            Parse(chunk, msg)
         except Exception as exception:
             self.send_response(400)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             return
 
-        container_id = msg.attach_container_input.container_id.value
-
+        container_id = chunk.attach_container_input.container_id.value
         stdin_write = containers[container_id]["stdin_pipe"][1]
-
         error_code = 200
 
         try:
@@ -248,11 +215,9 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
             # self.socket.settimeout(1)
             while True:
                 try:
-                    chunk = self.get_chunked_msg()
+                    msg = self.get_chunked_msg()
                 except Exception as exception:
                     continue
-                msg = pba.Call.AttachContainerInput()
-                Parse(chunk, msg)
 
                 data = msg.process_io.data
                 if len(data.data) == 0:
@@ -280,8 +245,6 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         self.wfile.write('0\r\n\r\n')
 
     def get_chunked_msg(self):
-        import pdb; pdb.set_trace()
-        #decoder
         chunk_size = os.read(self.rfile.fileno(), 2)
         while chunk_size[-2:] != b"\r\n":
             chunk_size += os.read(self.rfile.fileno(), 1)
@@ -290,10 +253,10 @@ class StreamingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler, object):
         chunk = os.read(self.rfile.fileno(), chunk_size)
         os.read(self.rfile.fileno(), 2)
 
-        record = decoder.decode(chunk.decode('utf-8'))
+        records = decoder.decode(chunk.decode('utf-8'))
 
-        if record:
-            return record
+        if records:
+            return records[0]
 
     def incref(self, container_id):
         containers[container_id]["lock"].acquire()
