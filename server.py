@@ -104,7 +104,7 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         return self.handle_attach_container_input_stream()
 
     def handle_launch_nested_container_session(self, msg):
-        container_id = msg['launchNestedContainerSession']['container_id']['value']
+        container_id = msg['launch_nested_container_session']['container_id']['value']
 
         if container_id in containers.keys():
             self.send_response(409)
@@ -115,7 +115,7 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         stderr_pipe = os.pipe()
 
         process = subprocess.Popen(
-            [msg['launchNestedContainerSession']['command']['value']] + list(msg['launchNestedContainerSession']['command']['arguments']),
+            [msg['launch_nested_container_session']['command']['value']] + list(msg['launch_nested_container_session']['command']['arguments']),
             close_fds=True,
             env={},
             stdin=stdin_pipe[0],
@@ -127,8 +127,8 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         os.close(stderr_pipe[1])
 
         containers[container_id] = {
-            "cmd" : msg['launchNestedContainerSession']['command'],
-            "args" : msg['launchNestedContainerSession']['command']['arguments'],
+            "cmd" : msg['launch_nested_container_session']['command'],
+            "args" : msg['launch_nested_container_session']['command']['arguments'],
             "stdin_pipe" : stdin_pipe,
             "stdout_pipe" : stdout_pipe,
             "stderr_pipe" : stderr_pipe,
