@@ -1,41 +1,26 @@
 #! /usr/bin/env python3
 
+import base64
+import json
 import os
 import sys
-import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import socket
 import socketserver
 import subprocess
+import time
 import threading
-import json
-
-from google.protobuf.json_format import MessageToJson, Parse
-
-from functools import partial
-
-import mesos.v1.agent.agent_pb2 as pba
-import mesos.v1.mesos_pb2 as pbm
 
 from dcos import recordio
+from functools import partial
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PORT = 8888
-
 
 containers = {}
 tasksToContainer = {"1":"a", "2":"b"}
 
-def record_parse(message):
-    msg = pba.Call()
-    try:
-        Parse(message, msg)
-    except:
-        msg = pba.Call.AttachContainerInput()
-        Parse(message, msg)
-    return msg
-
-encoder = recordio.Encoder(lambda s: bytes(MessageToJson(s), "UTF-8"))
-decoder = recordio.Decoder(record_parse)
+encoder = recordio.Encoder(lambda s: bytes(json.dumps(s, ensure_ascii=False), "UTF-8"))
+decoder = recordio.Decoder(lambda s: json.loads(s.decode("UTF-8")))
 
 
 ROUTES = [
@@ -68,15 +53,20 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
                 'id': '1', }],
             'frameworks': [{
                 'active':True, 
+                'user': 'steven',
                 'id': '1',
                 'tasks': [],
                 'completed_tasks': [],
-                }]}
+                }],
+            'completed_frameworks': []}
 
         for taskID, containerID in tasksToContainer.items():
             task = {
                 'id': taskID,
                 'slave_id': '1',
+                'framework_id': '1',
+                'state': 'TASK_RUNNING',
+                'name': 'abc',
                 'statuses': [{
                     'container_status': {
                         'container_id': {
@@ -106,15 +96,15 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
             records = decoder.decode(content)
             if records:
                 for record in records:
-                    if record.type == pba.Call.LAUNCH_NESTED_CONTAINER_SESSION:
+                    if record['type'] == 'LAUNCH_NESTED_CONTAINER_SESSION':
                         return self.handle_launch_nested_container_session(record)
-                    if record.type == pba.Call.ATTACH_CONTAINER_OUTPUT:
+                    if record['type'] == 'ATTACH_CONTAINER_OUTPUT':
                         return self.handle_attach_container_output_stream(record)
 
         return self.handle_attach_container_input_stream()
 
     def handle_launch_nested_container_session(self, msg):
-        container_id = msg.launch_nested_container_session.container_id.value
+        container_id = msg['launchNestedContainerSession']['container_id']['value']
 
         if container_id in containers.keys():
             self.send_response(409)
@@ -125,7 +115,7 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         stderr_pipe = os.pipe()
 
         process = subprocess.Popen(
-            [msg.launch_nested_container_session.command.value] + list(msg.launch_nested_container_session.command.arguments),
+            [msg['launchNestedContainerSession']['command']['value']] + list(msg['launchNestedContainerSession']['command']['arguments']),
             close_fds=True,
             env={},
             stdin=stdin_pipe[0],
@@ -137,8 +127,8 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         os.close(stderr_pipe[1])
 
         containers[container_id] = {
-            "cmd" : msg.launch_nested_container_session.command,
-            "args" : msg.launch_nested_container_session.command.arguments,
+            "cmd" : msg['launchNestedContainerSession']['command'],
+            "args" : msg['launchNestedContainerSession']['command']['arguments'],
             "stdin_pipe" : stdin_pipe,
             "stdout_pipe" : stdout_pipe,
             "stderr_pipe" : stderr_pipe,
@@ -148,9 +138,13 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
             "exit_event" : threading.Event()
         }
 
-        msg = pba.Call()
-        msg.type = pba.Call.ATTACH_CONTAINER_OUTPUT
-        msg.attach_container_output.container_id.value = container_id
+        msg = {}
+        msg['type'] = 'ATTACH_CONTAINER_OUTPUT'
+        msg['attach_container_output'] = {
+            'container_id': {
+                'value' : container_id,
+            }
+        }
 
         self.incref(container_id)
         containers[container_id]["exit_event"].clear()
@@ -164,25 +158,31 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         self.send_header('transfer-encoding', 'chunked')
         self.end_headers()
 
-        container_id = msg.attach_container_output.container_id.value
+        container_id = msg['attach_container_output']['container_id']['value']
 
         stdin_write = containers[container_id]["stdin_pipe"][1]
         stdout_read = containers[container_id]["stdout_pipe"][0]
         stderr_read = containers[container_id]["stderr_pipe"][0]
 
         for chunk in iter(partial(os.read, stdout_read, 1024), b''):
-            io_msg = pba.ProcessIO()
-            io_msg.type = pba.ProcessIO.Type.Value('DATA')
-            io_msg.data.type = pba.ProcessIO.Data.Type.Value('STDOUT')
-            io_msg.data.data = chunk
+            io_msg = {}
+            io_msg['type'] = 'DATA'
+            io_msg['data'] = {
+                'type': 'STDOUT',
+                'data': base64.b64encode(chunk).decode('utf-8'),
+            }
+
             io_msg = encoder.encode(io_msg)
             self.send_chunked_msg(io_msg)
 
         for chunk in iter(partial(os.read, stderr_read, 1024), b''):
-            io_msg = pba.ProcessIO()
-            io_msg.type = pba.ProcessIO.Type.Value('DATA')
-            io_msg.data.type = pba.ProcessIO.Data.Type.Value('STDERR')
-            io_msg.data.data = chunk
+            io_msg = {}
+            io_msg['type'] = 'DATA'
+            io_msg['data'] = {
+                'type': 'STDERR',
+                'data': base64.b64encode(chunk).decode('utf-8'),
+            }
+
             io_msg = encoder.encode(io_msg)
             self.send_chunked_msg(io_msg)
 
@@ -203,7 +203,7 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
             self.end_headers()
             return
 
-        container_id = chunk.attach_container_input.container_id.value
+        container_id = chunk['attach_container_input']['container_id']['value']
         stdin_write = containers[container_id]["stdin_pipe"][1]
         error_code = 200
 
@@ -216,11 +216,11 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
                 except Exception as exception:
                     continue
 
-                data = msg.process_io.data
-                if len(data.data) == 0:
+                data = msg['process_io']['data']
+                if len(data['data']) == 0:
                     break
 
-                os.write(stdin_write, data.data)
+                os.write(stdin_write, base64.b64decode(data['data']))
         except Exception as exception:
             error_code = 400
 
