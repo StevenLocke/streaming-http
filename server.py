@@ -216,7 +216,7 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
                 except Exception as exception:
                     continue
 
-                data = msg['process_io']['data']
+                data = msg['attach_container_input']['process_io']['data']
                 if len(data['data']) == 0:
                     break
 
