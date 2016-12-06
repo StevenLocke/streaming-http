@@ -221,10 +221,16 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
                     continue
 
                 data = msg['attach_container_input']['process_io']['data']
-                if len(data['data']) == 0:
-                    break
 
-                os.write(stdin_write, base64.b64decode(data['data']))
+                try:
+                    if len(data['data']) == 0:
+                        break
+                    os.write(stdin_write, base64.b64decode(data['data']))
+                except:
+                    if len(data['tty_info']) == 0:
+                        break
+                    self._window_resizer(data['tty_info'])
+
         except Exception as exception:
             error_code = 400
 
@@ -271,6 +277,11 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
             del containers[container_id]
         else:
             containers[container_id]["lock"].release()
+
+    def _window_resizer(self, msg):
+        print("Handle the window resizing here...")
+        print("Passed {columns} columns and {rows} rows.".format(columns=msg['columns'], \
+            rows=msg['rows']))
     
 
 if __name__ == '__main__':
