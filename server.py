@@ -93,7 +93,11 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
             length = int(self.headers['content-length'])
             content = self.rfile.read(length)
 
-            records = decoder.decode(content)
+            try:
+                records = [json.loads(content.decode("UTF-8"))]
+            except:
+                records = decoder.decode(content)
+
             if records:
                 for record in records:
                     if record['type'] == 'LAUNCH_NESTED_CONTAINER_SESSION':
@@ -115,7 +119,7 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         stderr_pipe = os.pipe()
 
         process = subprocess.Popen(
-            [msg['launch_nested_container_session']['command']['value']] + list(msg['launch_nested_container_session']['command']['arguments']),
+            [msg['launch_nested_container_session']['command']['value']] + list(msg['launch_nested_container_session']['command']['arguments'][1:]),
             close_fds=True,
             env={},
             stdin=stdin_pipe[0],
@@ -127,8 +131,8 @@ class StreamingRequestHandler(BaseHTTPRequestHandler, object):
         os.close(stderr_pipe[1])
 
         containers[container_id] = {
-            "cmd" : msg['launch_nested_container_session']['command'],
-            "args" : msg['launch_nested_container_session']['command']['arguments'],
+            "cmd" : msg['launch_nested_container_session']['command']['value'],
+            "args" : msg['launch_nested_container_session']['command']['arguments'][1:],
             "stdin_pipe" : stdin_pipe,
             "stdout_pipe" : stdout_pipe,
             "stderr_pipe" : stderr_pipe,
